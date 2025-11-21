@@ -11,8 +11,8 @@ hydra:
           - outputDir
           - datasetPath
           
-outputDir: /oak/stanford/groups/henderj/stfan/logs/speech_logs/pt_neural_decoder
-datasetPath: /oak/stanford/groups/henderj/stfan/data/ptDecoder_ctc
+outputDir: /home/harry/projects/ucla/UCLA-ECE243-FALL2025/logs/speech_logs/pt_neural_decoder
+datasetPath: /home/harry/projects/ucla/UCLA-ECE243-FALL2025/data/ptDecoder_ctc
 
 seed: 0
 batchSize: 64
