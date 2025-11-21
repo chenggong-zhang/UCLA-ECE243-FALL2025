@@ -24,7 +24,7 @@ input_args = parser.parse_args()
 with open(input_args.modelPath + "/args", "rb") as handle:
     args = pickle.load(handle)
 
-args["datasetPath"] = "/oak/stanford/groups/henderj/stfan/data/ptDecoder_ctc"
+args["datasetPath"] = "/home/harry/projects/ucla/UCLA-ECE243-FALL2025/data/ptDecoder_ctc"
 trainLoaders, testLoaders, loadedData = getDatasetLoaders(
     args["datasetPath"], args["seqLen"], args["maxTimeSeriesLen"], args["batchSize"]
 )

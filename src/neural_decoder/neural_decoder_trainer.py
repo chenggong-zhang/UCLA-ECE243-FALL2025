@@ -10,6 +10,8 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
 from .model import GRUDecoder
+from .model_transformer import TransformerDecoder
+
 from .dataset import SpeechDataset
 
 
@@ -69,28 +71,55 @@ def trainModel(args):
         args["batchSize"],
     )
 
-    model = GRUDecoder(
-        neural_dim=args["nInputFeatures"],
-        n_classes=args["nClasses"],
-        hidden_dim=args["nUnits"],
-        layer_dim=args["nLayers"],
-        nDays=len(loadedData["train"]),
-        dropout=args["dropout"],
-        device=device,
-        strideLen=args["strideLen"],
-        kernelLen=args["kernelLen"],
-        gaussianSmoothWidth=args["gaussianSmoothWidth"],
-        bidirectional=args["bidirectional"],
-    ).to(device)
+    if args.get("use_transformer", False):
+        model = TransformerDecoder(
+            neural_dim=args["nInputFeatures"],
+            n_classes=args["nClasses"],
+            hidden_dim=args["nUnits"],
+            layer_dim=args["nLayers"],
+            nDays=len(loadedData["train"]),
+            dropout=args["dropout"],
+            device=device,
+            strideLen=args["strideLen"],
+            kernelLen=args["kernelLen"],
+            gaussianSmoothWidth=args["gaussianSmoothWidth"],
+            bidirectional=args["bidirectional"],
+            nhead=args.get("nhead", 4),
+            dim_feedforward=args.get("dim_feedforward", 1024),
+        ).to(device)
+    else:
+        model = GRUDecoder(
+            neural_dim=args["nInputFeatures"],
+            n_classes=args["nClasses"],
+            hidden_dim=args["nUnits"],
+            layer_dim=args["nLayers"],
+            nDays=len(loadedData["train"]),
+            dropout=args["dropout"],
+            device=device,
+            strideLen=args["strideLen"],
+            kernelLen=args["kernelLen"],
+            gaussianSmoothWidth=args["gaussianSmoothWidth"],
+            bidirectional=args["bidirectional"],
+        ).to(device)
 
     loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
-    optimizer = torch.optim.Adam(
+    # optimizer = torch.optim.Adam(
+    #     model.parameters(),
+    #     lr=args["lrStart"],
+    #     betas=(0.9, 0.999),
+    #     eps=0.1,
+    #     weight_decay=args["l2_decay"],
+    # )
+    # 11/19/2025: Using AdamW instead of Adam
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args["lrStart"],
-        betas=(0.9, 0.999),
-        eps=0.1,
+        betas=(0.9, 0.98), # Better for Transformers
+        eps=1e-9, 
         weight_decay=args["l2_decay"],
     )
+
+
     scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer,
         start_factor=1.0,
@@ -123,6 +152,30 @@ def trainModel(args):
                 torch.randn([X.shape[0], 1, X.shape[2]], device=device)
                 * args["constantOffsetSD"]
             )
+        
+        # Time Masking (SpecAugment)
+        if args.get("timeMasking", False):
+            # Mask roughly 5% of time steps in 10-step blocks
+            B, T, C = X.shape
+            mask_len = 20 # Mask 20 time steps (~400ms)
+            # Apply to each item in batch
+            for b in range(B):
+                # Apply 2 masks per sequence on average
+                for _ in range(2): 
+                    if T > mask_len:
+                        start = torch.randint(0, T - mask_len, (1,)).item()
+                        X[b, start:start+mask_len, :] = 0.0
+        
+        # Feature Masking (SpecAugment)
+        if args.get("featureMasking", False):
+            B, T, C = X.shape
+            mask_channels = 20 # Mask 20 channels
+            for b in range(B):
+                # Apply 2 masks per sequence
+                for _ in range(2):
+                    if C > mask_channels:
+                        start = torch.randint(0, C - mask_channels, (1,)).item()
+                        X[b, :, start:start+mask_channels] = 0.0
 
         # Compute prediction error
         pred = model.forward(X, dayIdx)
@@ -211,6 +264,15 @@ def trainModel(args):
 
             with open(args["outputDir"] + "/trainingStats", "wb") as file:
                 pickle.dump(tStats, file)
+            
+            # Save to CSV for easier visualization
+            csv_path = args["outputDir"] + "/stats.csv"
+            # Append if file exists, else write header
+            mode = 'a' if os.path.exists(csv_path) else 'w'
+            with open(csv_path, mode) as f:
+                if mode == 'w':
+                    f.write("batch,ctc_loss,cer,time_per_batch\n")
+                f.write(f"{batch},{avgDayLoss},{cer},{(endTime - startTime)/100}\n")
 
 
 def loadModel(modelDir, nInputLayers=24, device="cuda"):
@@ -218,19 +280,36 @@ def loadModel(modelDir, nInputLayers=24, device="cuda"):
     with open(modelDir + "/args", "rb") as handle:
         args = pickle.load(handle)
 
-    model = GRUDecoder(
-        neural_dim=args["nInputFeatures"],
-        n_classes=args["nClasses"],
-        hidden_dim=args["nUnits"],
-        layer_dim=args["nLayers"],
-        nDays=nInputLayers,
-        dropout=args["dropout"],
-        device=device,
-        strideLen=args["strideLen"],
-        kernelLen=args["kernelLen"],
-        gaussianSmoothWidth=args["gaussianSmoothWidth"],
-        bidirectional=args["bidirectional"],
-    ).to(device)
+    if args.get("use_transformer", False):
+        model = TransformerDecoder(
+            neural_dim=args["nInputFeatures"],
+            n_classes=args["nClasses"],
+            hidden_dim=args["nUnits"],
+            layer_dim=args["nLayers"],
+            nDays=nInputLayers,
+            dropout=args["dropout"],
+            device=device,
+            strideLen=args["strideLen"],
+            kernelLen=args["kernelLen"],
+            gaussianSmoothWidth=args["gaussianSmoothWidth"],
+            bidirectional=args["bidirectional"],
+            nhead=args.get("nhead", 4),
+            dim_feedforward=args.get("dim_feedforward", 1024),
+        ).to(device)
+    else:
+        model = GRUDecoder(
+            neural_dim=args["nInputFeatures"],
+            n_classes=args["nClasses"],
+            hidden_dim=args["nUnits"],
+            layer_dim=args["nLayers"],
+            nDays=nInputLayers,
+            dropout=args["dropout"],
+            device=device,
+            strideLen=args["strideLen"],
+            kernelLen=args["kernelLen"],
+            gaussianSmoothWidth=args["gaussianSmoothWidth"],
+            bidirectional=args["bidirectional"],
+        ).to(device)
 
     model.load_state_dict(torch.load(modelWeightPath, map_location=device))
     return model

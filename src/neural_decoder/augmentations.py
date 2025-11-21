@@ -24,6 +24,54 @@ class MeanDriftNoise(nn.Module):
         noise = torch.randn(1, C) * self.std
         return x + noise
 
+class TimeMasking(nn.Module):
+    """
+    Masks random contiguous time steps (SpecAugment style).
+    """
+    def __init__(self, mask_prob=0.05, max_mask_len=10):
+        super().__init__()
+        self.mask_prob = mask_prob
+        self.max_mask_len = max_mask_len
+
+    def forward(self, x):
+        # x shape: [Batch, Time, Channels]
+        B, T, C = x.shape
+        
+        # Create a mask
+        mask = torch.ones_like(x)
+        
+        # This is a simplified implementation: applying one mask per sequence in batch
+        # For more aggressive masking, we can loop or use vectorization to apply multiple masks
+        for b in range(B):
+            if torch.rand(1) < 0.5: # Apply masking 50% of the time to a sample
+                mask_len = torch.randint(1, self.max_mask_len, (1,)).item()
+                start = torch.randint(0, max(1, T - mask_len), (1,)).item()
+                mask[b, start:start+mask_len, :] = 0
+                
+        return x * mask
+
+class FeatureMasking(nn.Module):
+    """
+    Masks random contiguous channels (electrodes).
+    """
+    def __init__(self, mask_prob=0.05, max_mask_channels=64):
+        super().__init__()
+        self.mask_prob = mask_prob
+        self.max_mask_channels = max_mask_channels
+
+    def forward(self, x):
+        # x shape: [Batch, Time, Channels]
+        B, T, C = x.shape
+        mask = torch.ones_like(x)
+        
+        for b in range(B):
+            if torch.rand(1) < 0.5: # Apply 50% of time
+                mask_channels = torch.randint(1, self.max_mask_channels, (1,)).item()
+                start = torch.randint(0, max(1, C - mask_channels), (1,)).item()
+                mask[b, :, start:start+mask_channels] = 0
+                
+        return x * mask
+
 class GaussianSmoothing(nn.Module):
     """
     Apply gaussian smoothing on a
@@ -31,11 +79,11 @@ class GaussianSmoothing(nn.Module):
     in the input using a depthwise convolution.
     Arguments:
         channels (int, sequence): Number of channels of the input tensors. Output will
-            have this number of channels as well.
+        have this number of channels as well.
         kernel_size (int, sequence): Size of the gaussian kernel.
         sigma (float, sequence): Standard deviation of the gaussian kernel.
         dim (int, optional): The number of dimensions of the data.
-            Default value is 2 (spatial).
+        Default value is 2 (spatial).
     """
 
     def __init__(self, channels, kernel_size, sigma, dim=2):
