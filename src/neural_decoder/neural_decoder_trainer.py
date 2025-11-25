@@ -88,19 +88,19 @@ def trainModel(args):
             dim_feedforward=args.get("dim_feedforward", 1024),
         ).to(device)
     else:
-        model = GRUDecoder(
-            neural_dim=args["nInputFeatures"],
-            n_classes=args["nClasses"],
-            hidden_dim=args["nUnits"],
-            layer_dim=args["nLayers"],
-            nDays=len(loadedData["train"]),
-            dropout=args["dropout"],
-            device=device,
-            strideLen=args["strideLen"],
-            kernelLen=args["kernelLen"],
-            gaussianSmoothWidth=args["gaussianSmoothWidth"],
-            bidirectional=args["bidirectional"],
-        ).to(device)
+    model = GRUDecoder(
+        neural_dim=args["nInputFeatures"],
+        n_classes=args["nClasses"],
+        hidden_dim=args["nUnits"],
+        layer_dim=args["nLayers"],
+        nDays=len(loadedData["train"]),
+        dropout=args["dropout"],
+        device=device,
+        strideLen=args["strideLen"],
+        kernelLen=args["kernelLen"],
+        gaussianSmoothWidth=args["gaussianSmoothWidth"],
+        bidirectional=args["bidirectional"],
+    ).to(device)
 
     loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
     # optimizer = torch.optim.Adam(
@@ -297,19 +297,19 @@ def loadModel(modelDir, nInputLayers=24, device="cuda"):
             dim_feedforward=args.get("dim_feedforward", 1024),
         ).to(device)
     else:
-        model = GRUDecoder(
-            neural_dim=args["nInputFeatures"],
-            n_classes=args["nClasses"],
-            hidden_dim=args["nUnits"],
-            layer_dim=args["nLayers"],
-            nDays=nInputLayers,
-            dropout=args["dropout"],
-            device=device,
-            strideLen=args["strideLen"],
-            kernelLen=args["kernelLen"],
-            gaussianSmoothWidth=args["gaussianSmoothWidth"],
-            bidirectional=args["bidirectional"],
-        ).to(device)
+    model = GRUDecoder(
+        neural_dim=args["nInputFeatures"],
+        n_classes=args["nClasses"],
+        hidden_dim=args["nUnits"],
+        layer_dim=args["nLayers"],
+        nDays=nInputLayers,
+        dropout=args["dropout"],
+        device=device,
+        strideLen=args["strideLen"],
+        kernelLen=args["kernelLen"],
+        gaussianSmoothWidth=args["gaussianSmoothWidth"],
+        bidirectional=args["bidirectional"],
+    ).to(device)
 
     model.load_state_dict(torch.load(modelWeightPath, map_location=device))
     return model

@@ -43,26 +43,18 @@
 ## Experiment 6: Scaling Up (Deep & Wide)
 **Date:** Nov 21, 2025
 **Settings:**
-*   **Model:** **8 Layers**, **384 Dim** (d_model).
-*   **Dropout:** Increased to `0.3`.
-*   **Training:** 12,000 batches.
-
-**Results:**
-*   **Final CER**: `0.206`.
-*   **Analysis**: Almost reached the 0.20 milestone. The loss was still slowly decreasing. The deeper model helped.
-
-**Gap to SOTA:**
-*   SOTA (Conformer) likely benefits from "interleaved" convolutions and better augmentation (Feature Masking).
-*   We are missing **Feature Masking** (masking specific electrode channels), which is standard in SpecAugment and BCI to handle channel noise.
+*   **Model:** 8 Layers, 384 Dim.
+*   **Result:** **CER 0.206**.
 
 ---
 
 ## Experiment 7: Feature Masking (SpecAugment++)
 **Date:** Nov 21, 2025
-**Planned Changes:**
-1.  **Augmentation**: Add **Feature Masking** (masking random channels/frequencies) alongside Time Masking.
-2.  **Goal**: Force the model to not rely on any single electrode, improving robustness and generalization.
-3.  **Model**: Keep Exp 6 settings (Large CNN-Transformer).
+**Settings:**
+*   **Augmentation:** Added Feature Masking.
+*   **Model:** 8 Layers, 384 Dim.
+*   **Result:** **CER 0.2056**.
+*   **Analysis:** Negligible gain (-0.0004). The current architecture (CNN-Transformer) has seemingly plateaued around 0.205.
 
-**Hypothesis:**
-*   Adding Feature Masking will provide the final regularization push needed to break `0.20` CER.
+**Next Steps:**
+*   To break the 0.20 barrier, we likely need a structural change to mix local/global features better (e.g., Conformer).
