@@ -53,8 +53,13 @@
 **Settings:**
 *   **Augmentation:** Added Feature Masking.
 *   **Model:** 8 Layers, 384 Dim.
-*   **Result:** **CER 0.2056**.
-*   **Analysis:** Negligible gain (-0.0004). The current architecture (CNN-Transformer) has seemingly plateaued around 0.205.
+*   **Result:** **CER 0.2056** in 12000 round, reach 0.198135 in 16000 round.
+*   **Analysis:** Negligible gain (-0.0004). The current architecture (CNN-Transformer) has seemingly plateaued around 0.20.
 
 **Next Steps:**
-*   To break the 0.20 barrier, we likely need a structural change to mix local/global features better (e.g., Conformer).
+*   To break the 0.20 floor decisively, we need:
+Conformer: Interleaved convolution is superior for speech.
+Rotational Embeddings (RoPE): Better than sinusoidal for variable lengths.
+Loss Function: CTC is notoriously "spiky". Adding a transducer (RNN-T) head is complex, but we can try a Label Smoothing or Focal Loss equivalent for CTC if available, or just stick to structural changes.
+
+## partial conclusion. This might reach the limitation for pure transformer base model. 11.24 after scalling several rounds with differen parameters.
