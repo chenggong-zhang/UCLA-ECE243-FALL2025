@@ -119,18 +119,53 @@ def trainModel(args):
         weight_decay=args["l2_decay"],
     )
 
+    scheduler_type = args.get("scheduler_type", "cosine_warmup")  # "linear", "cosine_warmup", "cosine"
+    warmup_steps = args.get("warmup_steps", 0)
+    
+    if scheduler_type == "cosine_warmup" and warmup_steps > 0:
+        from torch.optim.lr_scheduler import LambdaLR
+        import math
+        
+        def lr_lambda(current_step):
+            if current_step < warmup_steps:
+                return float(current_step) / float(max(1, warmup_steps))
+            else:
+                progress = float(current_step - warmup_steps) / float(max(1, args["nBatch"] - warmup_steps))
+                cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
 
-    scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1.0,
-        end_factor=args["lrEnd"] / args["lrStart"],
-        total_iters=args["nBatch"],
-    )
+                min_lr_ratio = args["lrEnd"] / args["lrStart"]
+                return min_lr_ratio + (1 - min_lr_ratio) * cosine_decay
+        
+        scheduler = LambdaLR(optimizer, lr_lambda)
+    elif scheduler_type == "cosine":
+        # Cosine annealing without warmu
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args["nBatch"],
+            eta_min=args["lrEnd"]
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1.0,
+            end_factor=args["lrEnd"] / args["lrStart"],
+            total_iters=args["nBatch"],
+        )
 
     # --train--
     testLoss = []
     testCER = []
     startTime = time.time()
+    
+    early_stopping_patience = args.get("early_stopping_patience", None)
+    best_cer = None
+    patience_counter = 0
+    best_batch = 0
+    
+    if early_stopping_patience is not None:
+        print(f"\nEarly stopping enabled with patience={early_stopping_patience} evaluations ({early_stopping_patience * 100} batches)")
+        print(f"Training will stop if CER doesn't improve for {early_stopping_patience} consecutive evaluations.\n")
+    
     for batch in range(args["nBatch"]):
         model.train()
 
@@ -191,6 +226,16 @@ def trainModel(args):
         # Backpropagation
         optimizer.zero_grad()
         loss.backward()
+        
+        max_grad_norm = args.get("max_grad_norm", 1.0)
+        if max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"WARNING: NaN/Inf loss detected at batch {batch}! Loss: {loss}")
+            print(f"  Current LR: {optimizer.param_groups[0]['lr']:.6f}")
+            continue
+        
         optimizer.step()
         scheduler.step()
 
@@ -246,17 +291,42 @@ def trainModel(args):
 
                 avgDayLoss = np.sum(allLoss) / len(testLoader)
                 cer = total_edit_distance / total_seq_length
+                current_lr = optimizer.param_groups[0]['lr']
 
                 endTime = time.time()
                 print(
-                    f"batch {batch}, ctc loss: {avgDayLoss:>7f}, cer: {cer:>7f}, time/batch: {(endTime - startTime)/100:>7.3f}"
+                    f"batch {batch}, ctc loss: {avgDayLoss:>7f}, cer: {cer:>7f}, lr: {current_lr:.6f}, time/batch: {(endTime - startTime)/100:>7.3f}"
                 )
                 startTime = time.time()
 
-            if len(testCER) > 0 and cer < np.min(testCER):
+            if best_cer is None:
+                best_cer = cer
+                best_batch = batch
+                patience_counter = 0
                 torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
+                print(f"  -> Initial CER: {cer:.6f}, saving model")
+            elif cer < best_cer:
+                best_cer = cer
+                best_batch = batch
+                patience_counter = 0
+                torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
+                print(f"  -> New best CER: {cer:.6f}, saving model")
+            else:
+                if early_stopping_patience is not None:
+                    patience_counter += 1
+                    if patience_counter % 10 == 0:
+                        print(f"  -> No improvement for {patience_counter}/{early_stopping_patience} evaluations (patience: {patience_counter * 100} batches)")
+            
             testLoss.append(avgDayLoss)
             testCER.append(cer)
+            
+            if early_stopping_patience is not None and patience_counter >= early_stopping_patience:
+                print(f"\nEarly stopping triggered!")
+                print(f"  Best CER: {best_cer:.6f} at batch {best_batch}")
+                print(f"  Current CER: {cer:.6f}")
+                print(f"  No improvement for {patience_counter} evaluations ({patience_counter * 100} batches)")
+                print(f"  Training stopped at batch {batch} / {args['nBatch']}")
+                break
 
             tStats = {}
             tStats["testLoss"] = np.array(testLoss)
@@ -271,8 +341,8 @@ def trainModel(args):
             mode = 'a' if os.path.exists(csv_path) else 'w'
             with open(csv_path, mode) as f:
                 if mode == 'w':
-                    f.write("batch,ctc_loss,cer,time_per_batch\n")
-                f.write(f"{batch},{avgDayLoss},{cer},{(endTime - startTime)/100}\n")
+                    f.write("batch,ctc_loss,cer,lr,time_per_batch\n")
+                f.write(f"{batch},{avgDayLoss},{cer},{current_lr},{(endTime - startTime)/100}\n")
 
 
 def loadModel(modelDir, nInputLayers=24, device="cuda"):
