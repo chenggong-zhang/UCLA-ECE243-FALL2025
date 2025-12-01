@@ -103,21 +103,28 @@ def trainModel(args):
         ).to(device)
 
     loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
-    # optimizer = torch.optim.Adam(
-    #     model.parameters(),
-    #     lr=args["lrStart"],
-    #     betas=(0.9, 0.999),
-    #     eps=0.1,
-    #     weight_decay=args["l2_decay"],
-    # )
-    # 11/19/2025: Using AdamW instead of Adam
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args["lrStart"],
-        betas=(0.9, 0.98), # Better for Transformers
-        eps=1e-9, 
-        weight_decay=args["l2_decay"],
-    )
+    criterion_kl = torch.nn.KLDivLoss(reduction="none", log_target=True)
+    lambda_cr = args.get("lambda_cr", 0.1)
+    
+    optimizer_name = str(args.get("optimizer", "adamw")).lower()
+    if optimizer_name == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=args["lrStart"],
+            betas=(0.9, 0.999),
+            eps=0.1,
+            weight_decay=args["l2_decay"],
+        )
+    elif optimizer_name == "adamw":
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args["lrStart"],
+            betas=(0.9, 0.98),  # Better defaults for Transformers
+            eps=1e-9,
+            weight_decay=args["l2_decay"],
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
 
     scheduler = torch.optim.lr_scheduler.LinearLR(
@@ -177,16 +184,36 @@ def trainModel(args):
                         start = torch.randint(0, C - mask_channels, (1,)).item()
                         X[b, :, start:start+mask_channels] = 0.0
 
-        # Compute prediction error
-        pred = model.forward(X, dayIdx)
+        # Two forward passes (weak/strong views)
+        pred_1 = model.forward(X, dayIdx)  # [B, T_out, C]
+        pred_2 = model.forward(X, dayIdx)  # [B, T_out, C]
 
-        loss = loss_ctc(
-            torch.permute(pred.log_softmax(2), [1, 0, 2]),
-            y,
-            ((X_len - model.kernelLen) / model.strideLen).to(torch.int32),
-            y_len,
-        )
-        loss = torch.sum(loss)
+        # CTC on each view (permute to [T, B, C] as required by CTCLoss)
+        adjustedLens = ((X_len - model.kernelLen) / model.strideLen).to(torch.int32)
+        log_probs_1_ctc = pred_1.log_softmax(2).permute(1, 0, 2)
+        log_probs_2_ctc = pred_2.log_softmax(2).permute(1, 0, 2)
+        loss_ctc_1 = loss_ctc(log_probs_1_ctc, y, adjustedLens, y_len)
+        loss_ctc_2 = loss_ctc(log_probs_2_ctc, y, adjustedLens, y_len)
+        loss_ctc_mean = 0.5 * (loss_ctc_1 + loss_ctc_2)
+
+        # Symmetric KL consistency regularization in log-prob space
+        log_probs_1 = pred_1.log_softmax(dim=2)  # [B, T_out, C]
+        log_probs_2 = pred_2.log_softmax(dim=2)  # [B, T_out, C]
+        kl_1 = criterion_kl(log_probs_2, log_probs_1.detach()).sum(dim=2)  # KL(p1||p2)
+        kl_2 = criterion_kl(log_probs_1, log_probs_2.detach()).sum(dim=2)  # KL(p2||p1)
+        kl_sym = 0.5 * (kl_1 + kl_2)  # [B, T_out]
+
+        # Mask padded time steps using adjusted lengths
+        B, T_out, _ = log_probs_1.shape
+        time_ids = torch.arange(T_out, device=log_probs_1.device).unsqueeze(0)  # [1, T_out]
+        mask = (time_ids < adjustedLens.unsqueeze(1)).float()  # [B, T_out]
+        loss_cr = (kl_sym * mask).sum() / mask.sum().clamp_min(1.0)
+
+        # Final loss combines CTC and consistency regularization
+        if lambda_cr > 0:
+            loss = loss_ctc_mean + lambda_cr * loss_cr
+        else:
+            loss = loss_ctc_mean
 
         # Backpropagation
         optimizer.zero_grad()
