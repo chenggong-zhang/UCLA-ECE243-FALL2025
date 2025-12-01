@@ -138,10 +138,17 @@ def trainModel(args):
     testLoss = []
     testCER = []
     startTime = time.time()
+    train_iter = iter(trainLoader)
     for batch in range(args["nBatch"]):
         model.train()
 
-        X, y, X_len, y_len, dayIdx = next(iter(trainLoader))
+        # Persistent iterator so we cycle through the loader instead of reusing the first batch
+        try:
+            X, y, X_len, y_len, dayIdx = next(train_iter)
+        except StopIteration:
+            train_iter = iter(trainLoader)
+            X, y, X_len, y_len, dayIdx = next(train_iter)
+
         X, y, X_len, y_len, dayIdx = (
             X.to(device),
             y.to(device),
