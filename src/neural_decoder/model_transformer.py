@@ -69,7 +69,8 @@ class TransformerDecoder(nn.Module):
         gaussianSmoothWidth=0,
         bidirectional=False, # Unused, kept for API compatibility
         nhead=4,             # New param: Number of attention heads
-        dim_feedforward=1024 # New param: Internal size of FFN
+        dim_feedforward=1024, # New param: Internal size of FFN
+        use_layer_norm=True,
     ):
         super(TransformerDecoder, self).__init__()
 
@@ -79,6 +80,7 @@ class TransformerDecoder(nn.Module):
         self.device = device
         self.strideLen = strideLen
         self.kernelLen = kernelLen
+        self.use_layer_norm = use_layer_norm
         
         # Day Adaptation (Linear)
         self.dayWeights = torch.nn.Parameter(torch.randn(nDays, neural_dim, neural_dim))
@@ -92,6 +94,7 @@ class TransformerDecoder(nn.Module):
         # We ignore kernelLen and strideLen args here because the CNN handles it implicitly
         # assuming stride 4 is desired.
         self.cnn_embed = CNNEmbedding(neural_dim, hidden_dim, stride_len=4)
+        self.input_layer_norm = nn.LayerNorm(hidden_dim) if self.use_layer_norm else None
 
         # --- Transformer Specifics ---
         # 2. Positional Encoding
@@ -110,6 +113,7 @@ class TransformerDecoder(nn.Module):
 
         # 4. Output Projection
         self.fc_decoder_out = nn.Linear(hidden_dim, n_classes + 1)
+        self.output_layer_norm = nn.LayerNorm(hidden_dim) if self.use_layer_norm else None
 
     def forward(self, neuralInput, dayIdx):
         # neuralInput: [Batch, Time, Channels]
@@ -126,6 +130,8 @@ class TransformerDecoder(nn.Module):
         # This replaces Unfold + Linear Projection
         # Output: [Batch, NewTime, HiddenDim]
         src = self.cnn_embed(transformedNeural) 
+        if self.input_layer_norm is not None:
+            src = self.input_layer_norm(src)
         
         # Scale embeddings (Transformer best practice)
         src = src * math.sqrt(self.hidden_dim)
@@ -141,6 +147,8 @@ class TransformerDecoder(nn.Module):
 
         # 6. Permute back to (Batch, SeqLen, Dim)
         output = output.permute(1, 0, 2)
+        if self.output_layer_norm is not None:
+            output = self.output_layer_norm(output)
 
         # 7. Output Class Probabilities
         seq_out = self.fc_decoder_out(output)

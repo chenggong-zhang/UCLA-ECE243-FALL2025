@@ -6,6 +6,7 @@ from edit_distance import SequenceMatcher
 import hydra
 import numpy as np
 import torch
+from torch.nn.utils import clip_grad_norm_
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
@@ -13,6 +14,62 @@ from .model import GRUDecoder
 from .model_transformer import TransformerDecoder
 
 from .dataset import SpeechDataset
+
+
+class LabelSmoothingCTCLoss(torch.nn.Module):
+    """
+    CTC loss with optional label smoothing to reduce overconfidence.
+    """
+
+    def __init__(self, blank=0, smoothing=0.1, reduction="mean", zero_infinity=True):
+        super().__init__()
+        self.blank = blank
+        self.smoothing = smoothing
+        self.reduction = reduction
+        self.zero_infinity = zero_infinity
+        self.ctc_loss = torch.nn.CTCLoss(
+            blank=blank, reduction="none", zero_infinity=zero_infinity
+        )
+
+    def forward(self, log_probs, targets, input_lengths, target_lengths):
+        # Standard CTC loss (per-example)
+        loss = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
+
+        if self.smoothing > 0:
+            # Encourage higher entropy (less peaky distributions)
+            probs = torch.exp(log_probs)
+            entropy = -(probs * log_probs).sum(dim=-1).mean()
+            loss = (1 - self.smoothing) * loss - self.smoothing * entropy
+
+        if self.reduction == "mean":
+            return loss.mean()
+        if self.reduction == "sum":
+            return loss.sum()
+        return loss
+
+
+def WarmupLinearLR(optimizer, warmup_steps, total_steps, lr_start, lr_end):
+    """
+    Warmup + linear decay scheduler implemented via LambdaLR.
+    """
+
+    total_steps = max(1, total_steps)
+    warmup_steps = min(max(0, warmup_steps), total_steps)
+    target_factor = lr_end / lr_start if lr_start > 0 else 1.0
+
+    def lr_lambda(step):
+        # Warmup from 0 -> 1 over warmup_steps
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+
+        # Linear decay from 1 -> target_factor for the remaining steps
+        remaining_steps = max(1, total_steps - warmup_steps)
+        decay_step = min(step - warmup_steps, remaining_steps)
+        decay_progress = decay_step / remaining_steps
+        factor = 1.0 - decay_progress * (1.0 - target_factor)
+        return max(factor, target_factor)
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def getDatasetLoaders(
@@ -86,6 +143,7 @@ def trainModel(args):
             bidirectional=args["bidirectional"],
             nhead=args.get("nhead", 4),
             dim_feedforward=args.get("dim_feedforward", 1024),
+            use_layer_norm=args.get("use_layer_norm", False),
         ).to(device)
     else:
         model = GRUDecoder(
@@ -100,9 +158,17 @@ def trainModel(args):
             kernelLen=args["kernelLen"],
             gaussianSmoothWidth=args["gaussianSmoothWidth"],
             bidirectional=args["bidirectional"],
+            use_layer_norm=args.get("use_layer_norm", False),
         ).to(device)
 
-    loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
+    smoothing = args.get("labelSmoothing", 0.1)
+    if smoothing > 0:
+        loss_ctc = LabelSmoothingCTCLoss(
+            blank=0, smoothing=smoothing, reduction="mean", zero_infinity=True
+        )
+    else:
+        loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
+    
     # optimizer = torch.optim.Adam(
     #     model.parameters(),
     #     lr=args["lrStart"],
@@ -120,16 +186,23 @@ def trainModel(args):
     )
 
 
-    scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1.0,
-        end_factor=args["lrEnd"] / args["lrStart"],
-        total_iters=args["nBatch"],
+    warmup_steps = args.get("warmupSteps", 500)
+
+    scheduler = WarmupLinearLR(
+        optimizer=optimizer,
+        warmup_steps=warmup_steps,
+        total_steps=args["nBatch"],
+        lr_start=args["lrStart"],
+        lr_end=args["lrEnd"],
     )
+    grad_clip = args.get("gradClip", 5.0)
 
     # --train--
     testLoss = []
     testCER = []
+    best_cer = float("inf")
+    patience = args.get("earlyStoppingPatience", 50)
+    patience_counter = 0
     startTime = time.time()
     for batch in range(args["nBatch"]):
         model.train()
@@ -191,6 +264,8 @@ def trainModel(args):
         # Backpropagation
         optimizer.zero_grad()
         loss.backward()
+        if grad_clip and grad_clip > 0:
+            clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         scheduler.step()
 
@@ -253,8 +328,12 @@ def trainModel(args):
                 )
                 startTime = time.time()
 
-            if len(testCER) > 0 and cer < np.min(testCER):
+            if cer < best_cer:
                 torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
+                best_cer = cer
+                patience_counter = 0
+            else:
+                patience_counter += 1
             testLoss.append(avgDayLoss)
             testCER.append(cer)
 
@@ -273,6 +352,10 @@ def trainModel(args):
                 if mode == 'w':
                     f.write("batch,ctc_loss,cer,time_per_batch\n")
                 f.write(f"{batch},{avgDayLoss},{cer},{(endTime - startTime)/100}\n")
+
+            if patience_counter >= patience:
+                print(f"Early stopping triggered at batch {batch} (patience {patience})")
+                break
 
 
 def loadModel(modelDir, nInputLayers=24, device="cuda"):
@@ -295,6 +378,7 @@ def loadModel(modelDir, nInputLayers=24, device="cuda"):
             bidirectional=args["bidirectional"],
             nhead=args.get("nhead", 4),
             dim_feedforward=args.get("dim_feedforward", 1024),
+            use_layer_norm=args.get("use_layer_norm", False),
         ).to(device)
     else:
         model = GRUDecoder(
@@ -309,6 +393,7 @@ def loadModel(modelDir, nInputLayers=24, device="cuda"):
             kernelLen=args["kernelLen"],
             gaussianSmoothWidth=args["gaussianSmoothWidth"],
             bidirectional=args["bidirectional"],
+            use_layer_norm=args.get("use_layer_norm", False),
         ).to(device)
 
     model.load_state_dict(torch.load(modelWeightPath, map_location=device))

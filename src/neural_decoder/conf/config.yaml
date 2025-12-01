@@ -17,13 +17,17 @@ datasetPath: /home/harry/projects/ucla/UCLA-ECE243-FALL2025/data/ptDecoder_ctc
 seed: 0
 batchSize: 64
 lrStart: 0.02
-lrEnd: 0.02
+lrEnd: 0.002
 l2_decay: 1e-5
 nBatch: 10000
+
+warmupSteps: 500
+gradClip: 5.0
 
 whiteNoiseSD: 0.8
 constantOffsetSD: 0.2
 gaussianSmoothWidth: 2.0
+use_layer_norm: true
 
 nUnits: 1024
 nLayers: 5
