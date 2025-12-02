@@ -35,6 +35,13 @@ args['dim_feedforward'] = 1536
 args['timeMasking'] = True
 args['featureMasking'] = True
 
+# --- Augmentation hyperparameters ---
+args['timeMaskLen'] = 20       # time steps per time-mask
+args['timeMaskNum'] = 2        # masks per sequence
+args['featureMaskLen'] = 20    # channels per feature-mask
+args['featureMaskNum'] = 2     # masks per sequence
+
+args['augRampupFrac'] = 0.3
 from neural_decoder.neural_decoder_trainer import trainModel
 
 trainModel(args)

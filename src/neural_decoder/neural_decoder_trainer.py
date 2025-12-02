@@ -1,6 +1,7 @@
 import os
 import pickle
 import time
+import math
 
 from edit_distance import SequenceMatcher
 import hydra
@@ -12,6 +13,7 @@ from torch.utils.data import DataLoader
 from .model import GRUDecoder
 from .model_transformer import TransformerDecoder
 
+from .augmentations import GaussianSmoothing
 from .dataset import SpeechDataset
 
 
@@ -152,6 +154,33 @@ def trainModel(args):
             total_iters=args["nBatch"],
         )
 
+    # Optional Gaussian smoothing pre-processing
+    gauss_smoother = None
+    gs_width = args.get("gaussianSmoothWidth", 0.0)
+    if gs_width is not None and gs_width > 0.0:
+        kernel_size = int(4 * gs_width + 1)
+        if kernel_size < 3:
+            kernel_size = 3
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+
+        gauss_smoother = GaussianSmoothing(
+            channels=args["nInputFeatures"],
+            kernel_size=kernel_size,
+            sigma=gs_width,
+            dim=1,
+        ).to(device)
+
+    # Total training steps = epochs × batches per epoch
+    total_steps = args["nBatch"]
+    ramp_frac = args.get("augRampupFrac", 0.3)
+    ramp_steps = max(1, int(total_steps * ramp_frac))
+
+    def get_aug_scale(step_idx):
+        if step_idx >= ramp_steps:
+            return 1.0
+        return float(step_idx) / float(ramp_steps)
+
     # --train--
     testLoss = []
     testCER = []
@@ -166,10 +195,18 @@ def trainModel(args):
         print(f"\nEarly stopping enabled with patience={early_stopping_patience} evaluations ({early_stopping_patience * 100} batches)")
         print(f"Training will stop if CER doesn't improve for {early_stopping_patience} consecutive evaluations.\n")
     
-    for batch in range(args["nBatch"]):
+    global_step = 0
+    train_iter = iter(trainLoader)
+
+    for step in range(args["nBatch"]):
         model.train()
 
-        X, y, X_len, y_len, dayIdx = next(iter(trainLoader))
+        try:
+            X, y, X_len, y_len, dayIdx = next(train_iter)
+        except StopIteration:
+            train_iter = iter(trainLoader)
+            X, y, X_len, y_len, dayIdx = next(train_iter)
+
         X, y, X_len, y_len, dayIdx = (
             X.to(device),
             y.to(device),
@@ -178,39 +215,48 @@ def trainModel(args):
             dayIdx.to(device),
         )
 
-        # Noise augmentation is faster on GPU
-        if args["whiteNoiseSD"] > 0:
-            X += torch.randn(X.shape, device=device) * args["whiteNoiseSD"]
+        # Gaussian smoothing
+        if gauss_smoother is not None:
+            X = X.permute(0, 2, 1)    # [B, C, T]
+            X = gauss_smoother(X)
+            X = X.permute(0, 2, 1)    # [B, T, C]
 
-        if args["constantOffsetSD"] > 0:
+        # Augmentation schedule
+        aug_scale = get_aug_scale(step)
+
+        # Noise
+        if args["whiteNoiseSD"] > 0 and aug_scale > 0:
+            X += torch.randn(X.shape, device=device) * (args["whiteNoiseSD"] * aug_scale)
+
+        if args["constantOffsetSD"] > 0 and aug_scale > 0:
             X += (
                 torch.randn([X.shape[0], 1, X.shape[2]], device=device)
-                * args["constantOffsetSD"]
+                * (args["constantOffsetSD"] * aug_scale)
             )
-        
-        # Time Masking (SpecAugment)
-        if args.get("timeMasking", False):
-            # Mask roughly 5% of time steps in 10-step blocks
+
+        # Time masking
+        if args.get("timeMasking", False) and aug_scale > 0:
             B, T, C = X.shape
-            mask_len = 20 # Mask 20 time steps (~400ms)
-            # Apply to each item in batch
+            mask_len = int(args.get("timeMaskLen", 20))
+            base_num = int(args.get("timeMaskNum", 2))
+            num_masks = max(1, math.ceil(base_num * aug_scale))
             for b in range(B):
-                # Apply 2 masks per sequence on average
-                for _ in range(2): 
+                for _ in range(num_masks):
                     if T > mask_len:
                         start = torch.randint(0, T - mask_len, (1,)).item()
-                        X[b, start:start+mask_len, :] = 0.0
-        
-        # Feature Masking (SpecAugment)
-        if args.get("featureMasking", False):
+                        X[b, start:start + mask_len, :] = 0.0
+
+        # Feature masking
+        if args.get("featureMasking", False) and aug_scale > 0:
             B, T, C = X.shape
-            mask_channels = 20 # Mask 20 channels
+            mask_channels = int(args.get("featureMaskLen", 20))
+            base_num = int(args.get("featureMaskNum", 2))
+            num_masks = max(1, math.ceil(base_num * aug_scale))
             for b in range(B):
-                # Apply 2 masks per sequence
-                for _ in range(2):
+                for _ in range(num_masks):
                     if C > mask_channels:
                         start = torch.randint(0, C - mask_channels, (1,)).item()
-                        X[b, :, start:start+mask_channels] = 0.0
+                        X[b, :, start:start + mask_channels] = 0.0
 
         # Compute prediction error
         pred = model.forward(X, dayIdx)
@@ -232,17 +278,18 @@ def trainModel(args):
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"WARNING: NaN/Inf loss detected at batch {batch}! Loss: {loss}")
+            print(f"WARNING: NaN/Inf loss detected at batch {step}! Loss: {loss}")
             print(f"  Current LR: {optimizer.param_groups[0]['lr']:.6f}")
             continue
         
         optimizer.step()
         scheduler.step()
+        global_step += 1
 
         # print(endTime - startTime)
 
         # Eval
-        if batch % 100 == 0:
+        if step % 100 == 0:
             with torch.no_grad():
                 model.eval()
                 allLoss = []
@@ -256,6 +303,12 @@ def trainModel(args):
                         y_len.to(device),
                         testDayIdx.to(device),
                     )
+
+                    # Gaussian smoothing at evaluation time
+                    if gauss_smoother is not None:
+                        X = X.permute(0, 2, 1)
+                        X = gauss_smoother(X)
+                        X = X.permute(0, 2, 1)
 
                     pred = model.forward(X, testDayIdx)
                     loss = loss_ctc(
@@ -295,19 +348,19 @@ def trainModel(args):
 
                 endTime = time.time()
                 print(
-                    f"batch {batch}, ctc loss: {avgDayLoss:>7f}, cer: {cer:>7f}, lr: {current_lr:.6f}, time/batch: {(endTime - startTime)/100:>7.3f}"
+                    f"batch {step}, ctc loss: {avgDayLoss:>7f}, cer: {cer:>7f}, lr: {current_lr:.6f}, time/batch: {(endTime - startTime)/100:>7.3f}"
                 )
                 startTime = time.time()
 
             if best_cer is None:
                 best_cer = cer
-                best_batch = batch
+                best_batch = step
                 patience_counter = 0
                 torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
                 print(f"  -> Initial CER: {cer:.6f}, saving model")
             elif cer < best_cer:
                 best_cer = cer
-                best_batch = batch
+                best_batch = step
                 patience_counter = 0
                 torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
                 print(f"  -> New best CER: {cer:.6f}, saving model")
@@ -325,7 +378,7 @@ def trainModel(args):
                 print(f"  Best CER: {best_cer:.6f} at batch {best_batch}")
                 print(f"  Current CER: {cer:.6f}")
                 print(f"  No improvement for {patience_counter} evaluations ({patience_counter * 100} batches)")
-                print(f"  Training stopped at batch {batch} / {args['nBatch']}")
+                print(f"  Training stopped at batch {step} / {args['nBatch']}")
                 break
 
             tStats = {}
@@ -342,7 +395,7 @@ def trainModel(args):
             with open(csv_path, mode) as f:
                 if mode == 'w':
                     f.write("batch,ctc_loss,cer,lr,time_per_batch\n")
-                f.write(f"{batch},{avgDayLoss},{cer},{current_lr},{(endTime - startTime)/100}\n")
+                f.write(f"{step},{avgDayLoss},{cer},{current_lr},{(endTime - startTime)/100}\n")
 
 
 def loadModel(modelDir, nInputLayers=24, device="cuda"):
