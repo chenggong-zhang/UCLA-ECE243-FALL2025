@@ -17,44 +17,53 @@ def make_args(model_name, lambda_cr):
 
         # "seqLen": 150,
         # "maxTimeSeriesLen": 1200,
+        # not referenced anywhere in the trainer or model
 
-        "batchSize": 64,
-        "lrStart": 0.0008,
-        "lrEnd": 0.00008,
-        "nUnits": 384,
-        "nBatch": 16000,
-        "nLayers": 8,
+        "bidirectional": False,
+        # accepted by TransformerDecoder but never used inside it.
+
+        "strideLen": 4, # stored, but CNN front-end is hardcoded to stride 4; only used later for length math.
+        "kernelLen": 0, # not used in the CNN; only affects the length formula in the trainer.
+        ##################################################### used and could be improved by grid search######################################
+        #basic info about dataset and training
         "seed": 0,
+        "batchSize": 64,
+        "nBatch": 16000,
         "nClasses": 40,
         "nInputFeatures": 256,
+
+        # Transformer architecture
+        "use_transformer": True,
+        "nhead": 6,
+        "nUnits": 384,
+        "nLayers": 8,
+        "dim_feedforward": 1536,
+        "timeMasking": True,
+        "featureMasking": True,
+        "use_rope": True,  # Enable RoPE in transformer attention
+        "use_layer_norm": True,
         "dropout": 0.3,
+
+        # augmentation
         "whiteNoiseSD": 0.8,
         "constantOffsetSD": 0.2,
         "gaussianSmoothWidth": 2.0,
 
-        "strideLen": 4,
-        "kernelLen": 0,
-
-        "bidirectional": False,
+        # optimizer and learning rate LR Schedule and decay
+        "lrStart": 0.0008,
+        "lrEnd": 0.00008,
         "l2_decay": 0.01,
-
-        # Transformer specifics
-        "use_transformer": True,
-        "nhead": 6,
-        "dim_feedforward": 1536,
-        "timeMasking": True,
-        "featureMasking": True,
-
-        # Enhanced training controls
         "warmupSteps": 500,
-        "labelSmoothing": 0.0,
+        "gradClip": 5.0, #Stability
+
+        #Training Control
         "earlyStoppingPatience": 50,
-        "use_layer_norm": True,
-        "gradClip": 5.0,
-        # CR-CTC
+
+        # CR-CTC loss vs label smoothing loss
         "use_cr_ctc": True,
         "lambda_cr": lambda_cr,
-        "use_rope": True  # Enable RoPE in transformer attention
+        "labelSmoothing": 0.0, # set 0 for not used, use cr_ctc
+
     }
     return args
 
