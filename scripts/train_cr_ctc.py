@@ -14,16 +14,14 @@ def make_args(model_name, lambda_cr):
     args = {
         "outputDir": f"/home/chenggong/UCLA-ECE243-FALL2025/logs/speech_logs/{model_name}",
         "datasetPath": "/home/chenggong/UCLA-ECE243-FALL2025/data/ptDecoder_ctc.pkl",
-
         # "seqLen": 150,
         # "maxTimeSeriesLen": 1200,
         # not referenced anywhere in the trainer or model
-
         "bidirectional": False,
         # accepted by TransformerDecoder but never used inside it.
-
         "strideLen": 4, # stored, but CNN front-end is hardcoded to stride 4; only used later for length math.
         "kernelLen": 0, # not used in the CNN; only affects the length formula in the trainer.
+
         ##################################################### used and could be improved by grid search######################################
         #basic info about dataset and training
         "seed": 0,
