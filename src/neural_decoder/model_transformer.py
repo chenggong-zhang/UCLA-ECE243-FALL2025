@@ -15,13 +15,12 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer("pe", pe)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
         # x shape: [seq_len, batch_size, embedding_dim]
-        x = x + self.pe[: x.size(0), :]
+        x = x + self.pe[:x.size(0), :]
         return self.dropout(x)
-
 
 class CNNEmbedding(nn.Module):
     """
@@ -29,26 +28,29 @@ class CNNEmbedding(nn.Module):
     Replaces GaussianSmoothing + Unfold.
     Structure: Conv1d -> GeLU -> Conv1d -> GeLU
     """
-
     def __init__(self, input_dim, hidden_dim, stride_len=4):
         super().__init__()
-
-        # Two layers of stride 2 give total stride 4.
+        
+        # We want total stride to be 4 (to match baseline's strideLen=4)
+        # Two layers of stride 2 will achieve this.
+        
+        # Layer 1
         self.conv1 = nn.Conv1d(input_dim, hidden_dim, kernel_size=3, stride=2, padding=1)
         self.act1 = nn.GELU()
-
+        
+        # Layer 2
         self.conv2 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, stride=2, padding=1)
         self.act2 = nn.GELU()
-
+        
     def forward(self, x):
         # x: [Batch, Time, Channels] -> [Batch, Channels, Time]
         x = x.permute(0, 2, 1)
-
+        
         x = self.conv1(x)
         x = self.act1(x)
         x = self.conv2(x)
         x = self.act2(x)
-
+        
         # [Batch, Hidden, Time] -> [Batch, Time, Hidden]
         x = x.permute(0, 2, 1)
         return x
@@ -126,8 +128,8 @@ class TransformerDecoder(nn.Module):
         self,
         neural_dim,
         n_classes,
-        hidden_dim,  # d_model
-        layer_dim,  # number of Transformer layers
+        hidden_dim, # This will be d_model (embedding dimension)
+        layer_dim,  # Number of Transformer layers
         nDays=24,
         dropout=0.1,
         device="cuda",
@@ -164,6 +166,10 @@ class TransformerDecoder(nn.Module):
             self.dayWeights.data[x, :, :] = torch.eye(neural_dim)
         self.inputLayerNonlinearity = torch.nn.Softsign()
 
+        # --- New Learnable Front-end ---
+        # Replaces GaussianSmoothing and Unfolder
+        # We ignore kernelLen and strideLen args here because the CNN handles it implicitly
+        # assuming stride 4 is desired.
         self.cnn_embed = CNNEmbedding(neural_dim, hidden_dim, stride_len=4)
         self.input_layer_norm = nn.LayerNorm(hidden_dim) if self.use_layer_norm else None
 
@@ -185,6 +191,7 @@ class TransformerDecoder(nn.Module):
             ]
         )
 
+        # 4. Output Projection
         self.fc_decoder_out = nn.Linear(hidden_dim, n_classes + 1)
         self.output_layer_norm = nn.LayerNorm(hidden_dim) if self.use_layer_norm else None
 
@@ -212,7 +219,11 @@ class TransformerDecoder(nn.Module):
         
         # Scale embeddings (Transformer best practice)
         src = src * math.sqrt(self.hidden_dim)
-        src = src.permute(1, 0, 2)  # [S, B, E]
+
+        # 3. Permute for Transformer (SeqLen, Batch, Dim)
+        src = src.permute(1, 0, 2)
+
+        # 4. Add Positional Encoding
         src = self.pos_encoder(src)
 
         # 5. Transformer Layers (with optional RoPE inside attention)
@@ -225,6 +236,8 @@ class TransformerDecoder(nn.Module):
         if self.output_layer_norm is not None:
             output = self.output_layer_norm(output)
 
-        output = src.permute(1, 0, 2)  # [B, S, E]
+        # 7. Output Class Probabilities
         seq_out = self.fc_decoder_out(output)
+
+
         return seq_out
