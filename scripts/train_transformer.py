@@ -26,6 +26,9 @@ args['strideLen'] = 4
 args['kernelLen'] = 0
 args['bidirectional'] = False 
 args['l2_decay'] = 0.01
+args['optimizer'] = 'adamw'
+
+args['lambda_cr'] = 0.0  # disable CR-CTC here (set >0 to enable)
 
 # --- Transformer Specifics ---
 args['use_transformer'] = True
@@ -33,6 +36,7 @@ args['nhead'] = 6
 args['dim_feedforward'] = 1536 
 args['timeMasking'] = True
 args['featureMasking'] = True # Enable Feature Masking
+args['use_rope'] = True
 
 args['labelSmoothing'] = 0.0  # Enable Label Smoothing with 0.1 factor
 
