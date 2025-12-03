@@ -53,6 +53,6 @@ def plot_experiments(base_log_dir):
 
 if __name__ == "__main__":
     # Assuming logs are in logs/speech_logs/
-    base_dir = '/home/harry/projects/ucla/UCLA-ECE243-FALL2025/logs/speech_logs/'
+    base_dir = '/home/chenggong/UCLA-ECE243-FALL2025/logs/speech_logs/'
     plot_experiments(base_dir)
 

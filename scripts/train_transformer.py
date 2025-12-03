@@ -1,16 +1,19 @@
 
-modelName = 'speechTransformerCNN_ROPE'
+modelName = 'speechTransformerCNN_LabelSmooth0.1_withoutLayerNorm'
 
 args = {}
-args['outputDir'] = '/home/alex/Downloads/UCLA-ECE243-FALL2025/logs/speech_logs/' + modelName
-args['datasetPath'] = '/home/alex/Downloads/UCLA-ECE243-FALL2025/data/ptDecoder_ctc.pkl'
+args['outputDir'] = '/home/chenggong/UCLA-ECE243-FALL2025/logs/speech_logs/' + modelName
+args['datasetPath'] = '/home/chenggong/UCLA-ECE243-FALL2025/data/ptDecoder_ctc.pkl'
 args['seqLen'] = 150
 args['maxTimeSeriesLen'] = 1200
 args['batchSize'] = 64
-args['lrStart'] = 0.0005 
-args['lrEnd'] = 0.00005
+args['lrStart'] = 0.0008 
+args['lrEnd'] = 0.00008
+
+args['warmupSteps'] = 500
+
 args['nUnits'] = 384        
-args['nBatch'] = 12000      
+args['nBatch'] = 16000      
 args['nLayers'] = 8         
 args['seed'] = 0
 args['nClasses'] = 40
@@ -34,6 +37,13 @@ args['dim_feedforward'] = 1536
 args['timeMasking'] = True
 args['featureMasking'] = True # Enable Feature Masking
 args['use_rope'] = True
+
+args['labelSmoothing'] = 0.0  # Enable Label Smoothing with 0.1 factor
+
+args['earlyStoppingPatience'] = 50  # Early stopping patience
+args['use_layer_norm'] = True  # Enable LayerNorm in encoder/decoder
+args['gradClip'] = 5.0  # Gradient clipping threshold
+args['use_rope'] = True  # Enable RoPE in transformer attention
 
 from neural_decoder.neural_decoder_trainer import trainModel
 

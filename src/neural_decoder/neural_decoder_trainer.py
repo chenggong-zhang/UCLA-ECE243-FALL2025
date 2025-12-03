@@ -6,6 +6,7 @@ from edit_distance import SequenceMatcher
 import hydra
 import numpy as np
 import torch
+from torch.nn.utils import clip_grad_norm_
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
@@ -13,6 +14,102 @@ from .model import GRUDecoder
 from .model_transformer import TransformerDecoder
 
 from .dataset import SpeechDataset
+
+
+class LabelSmoothingCTCLoss(torch.nn.Module):
+    """
+    CTC loss with optional label smoothing to reduce overconfidence.
+    """
+
+    def __init__(self, blank=0, smoothing=0.1, reduction="mean", zero_infinity=True):
+        super().__init__()
+        self.blank = blank
+        self.smoothing = smoothing
+        self.reduction = reduction
+        self.zero_infinity = zero_infinity
+        self.ctc_loss = torch.nn.CTCLoss(
+            blank=blank, reduction="none", zero_infinity=zero_infinity
+        )
+
+    def forward(self, log_probs, targets, input_lengths, target_lengths):
+        # Standard CTC loss (per-example)
+        loss = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
+
+        if self.smoothing > 0:
+            # Encourage higher entropy (less peaky distributions)
+            probs = torch.exp(log_probs)
+            entropy = -(probs * log_probs).sum(dim=-1).mean()
+            loss = (1 - self.smoothing) * loss - self.smoothing * entropy
+
+        if self.reduction == "mean":
+            return loss.mean()
+        if self.reduction == "sum":
+            return loss.sum()
+        return loss
+
+
+class CRCTCLoss(torch.nn.Module):
+    """
+    Consistency-regularized CTC loss (CR-CTC).
+    Combines two-view CTC with symmetric KL between the views.
+    """
+
+    def __init__(self, base_ctc_loss, lambda_cr=0.1):
+        super().__init__()
+        self.base_ctc_loss = base_ctc_loss
+        self.lambda_cr = lambda_cr
+        self.kl = torch.nn.KLDivLoss(reduction="none", log_target=True)
+
+    def forward(self, logits_1, logits_2, targets, input_lengths, target_lengths):
+        # Log-probabilities
+        log_probs_1 = logits_1.log_softmax(dim=2)
+        log_probs_2 = logits_2.log_softmax(dim=2)
+
+        # CTC loss on each view (base_ctc_loss expects [T, B, C])
+        loss_ctc_1 = self.base_ctc_loss(
+            log_probs_1.permute(1, 0, 2), targets, input_lengths, target_lengths
+        )
+        loss_ctc_2 = self.base_ctc_loss(
+            log_probs_2.permute(1, 0, 2), targets, input_lengths, target_lengths
+        )
+        loss_ctc_mean = 0.5 * (loss_ctc_1 + loss_ctc_2)
+
+        # Symmetric KL (detach teacher)
+        kl_1 = self.kl(log_probs_2, log_probs_1.detach()).sum(dim=2)  # KL(p1 || p2)
+        kl_2 = self.kl(log_probs_1, log_probs_2.detach()).sum(dim=2)  # KL(p2 || p1)
+        kl_sym = 0.5 * (kl_1 + kl_2)  # [B, T]
+
+        # Mask padded steps
+        B, T_out, _ = log_probs_1.shape
+        time_ids = torch.arange(T_out, device=log_probs_1.device).unsqueeze(0)  # [1, T]
+        mask = (time_ids < input_lengths.unsqueeze(1)).float()  # [B, T]
+        loss_cr = (kl_sym * mask).sum() / mask.sum().clamp_min(1.0)
+
+        return loss_ctc_mean + self.lambda_cr * loss_cr
+
+
+def WarmupLinearLR(optimizer, warmup_steps, total_steps, lr_start, lr_end):
+    """
+    Warmup + linear decay scheduler implemented via LambdaLR.
+    """
+
+    total_steps = max(1, total_steps)
+    warmup_steps = min(max(0, warmup_steps), total_steps)
+    target_factor = lr_end / lr_start if lr_start > 0 else 1.0
+
+    def lr_lambda(step):
+        # Warmup from 0 -> 1 over warmup_steps
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+
+        # Linear decay from 1 -> target_factor for the remaining steps
+        remaining_steps = max(1, total_steps - warmup_steps)
+        decay_step = min(step - warmup_steps, remaining_steps)
+        decay_progress = decay_step / remaining_steps
+        factor = 1.0 - decay_progress * (1.0 - target_factor)
+        return max(factor, target_factor)
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def getDatasetLoaders(
@@ -86,6 +183,8 @@ def trainModel(args):
             bidirectional=args["bidirectional"],
             nhead=args.get("nhead", 4),
             dim_feedforward=args.get("dim_feedforward", 1024),
+            use_layer_norm=args.get("use_layer_norm", False),
+            use_rope=args.get("use_rope", True),
         ).to(device)
     else:
         model = GRUDecoder(
@@ -100,55 +199,67 @@ def trainModel(args):
             kernelLen=args["kernelLen"],
             gaussianSmoothWidth=args["gaussianSmoothWidth"],
             bidirectional=args["bidirectional"],
+            use_layer_norm=args.get("use_layer_norm", False),
         ).to(device)
 
-    loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
-    criterion_kl = torch.nn.KLDivLoss(reduction="none", log_target=True)
-    lambda_cr = args.get("lambda_cr", 0.1)
-    
-    optimizer_name = str(args.get("optimizer", "adamw")).lower()
-    if optimizer_name == "adam":
-        optimizer = torch.optim.Adam(
-            model.parameters(),
-            lr=args["lrStart"],
-            betas=(0.9, 0.999),
-            eps=0.1,
-            weight_decay=args["l2_decay"],
-        )
-    elif optimizer_name == "adamw":
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=args["lrStart"],
-            betas=(0.9, 0.98),  # Better defaults for Transformers
-            eps=1e-9,
-            weight_decay=args["l2_decay"],
+    smoothing = args.get("labelSmoothing", 0.1)
+    if smoothing > 0:
+        base_ctc_loss = LabelSmoothingCTCLoss(
+            blank=0, smoothing=smoothing, reduction="mean", zero_infinity=True
         )
     else:
-        raise ValueError(f"Unsupported optimizer: {optimizer_name}")
-
-
-    scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1.0,
-        end_factor=args["lrEnd"] / args["lrStart"],
-        total_iters=args["nBatch"],
+        base_ctc_loss = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
+    use_cr_ctc = args.get("use_cr_ctc", False)
+    lambda_cr = args.get("lambda_cr", 0.1)
+    if use_cr_ctc:
+        loss_fn = CRCTCLoss(base_ctc_loss, lambda_cr=lambda_cr)
+    else:
+        loss_fn = base_ctc_loss
+    
+    # optimizer = torch.optim.Adam(
+    #     model.parameters(),
+    #     lr=args["lrStart"],
+    #     betas=(0.9, 0.999),
+    #     eps=0.1,
+    #     weight_decay=args["l2_decay"],
+    # )
+    # 11/19/2025: Using AdamW instead of Adam
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args["lrStart"],
+        betas=(0.9, 0.98), # Better for Transformers
+        eps=1e-9, 
+        weight_decay=args["l2_decay"],
     )
+
+
+    warmup_steps = args.get("warmupSteps", 500)
+
+    scheduler = WarmupLinearLR(
+        optimizer=optimizer,
+        warmup_steps=warmup_steps,
+        total_steps=args["nBatch"],
+        lr_start=args["lrStart"],
+        lr_end=args["lrEnd"],
+    )
+    grad_clip = args.get("gradClip", 5.0)
 
     # --train--
     testLoss = []
     testCER = []
+    best_cer = float("inf")
+    patience = args.get("earlyStoppingPatience", 50)
+    patience_counter = 0
     startTime = time.time()
     train_iter = iter(trainLoader)
     for batch in range(args["nBatch"]):
         model.train()
 
-        # Persistent iterator so we cycle through the loader instead of reusing the first batch
         try:
             X, y, X_len, y_len, dayIdx = next(train_iter)
         except StopIteration:
             train_iter = iter(trainLoader)
             X, y, X_len, y_len, dayIdx = next(train_iter)
-
         X, y, X_len, y_len, dayIdx = (
             X.to(device),
             y.to(device),
@@ -191,40 +302,27 @@ def trainModel(args):
                         start = torch.randint(0, C - mask_channels, (1,)).item()
                         X[b, :, start:start+mask_channels] = 0.0
 
-        # Two forward passes (weak/strong views)
-        pred_1 = model.forward(X, dayIdx)  # [B, T_out, C]
-        pred_2 = model.forward(X, dayIdx)  # [B, T_out, C]
-
-        # CTC on each view (permute to [T, B, C] as required by CTCLoss)
         adjustedLens = ((X_len - model.kernelLen) / model.strideLen).to(torch.int32)
-        log_probs_1_ctc = pred_1.log_softmax(2).permute(1, 0, 2)
-        log_probs_2_ctc = pred_2.log_softmax(2).permute(1, 0, 2)
-        loss_ctc_1 = loss_ctc(log_probs_1_ctc, y, adjustedLens, y_len)
-        loss_ctc_2 = loss_ctc(log_probs_2_ctc, y, adjustedLens, y_len)
-        loss_ctc_mean = 0.5 * (loss_ctc_1 + loss_ctc_2)
 
-        # Symmetric KL consistency regularization in log-prob space
-        log_probs_1 = pred_1.log_softmax(dim=2)  # [B, T_out, C]
-        log_probs_2 = pred_2.log_softmax(dim=2)  # [B, T_out, C]
-        kl_1 = criterion_kl(log_probs_2, log_probs_1.detach()).sum(dim=2)  # KL(p1||p2)
-        kl_2 = criterion_kl(log_probs_1, log_probs_2.detach()).sum(dim=2)  # KL(p2||p1)
-        kl_sym = 0.5 * (kl_1 + kl_2)  # [B, T_out]
-
-        # Mask padded time steps using adjusted lengths
-        B, T_out, _ = log_probs_1.shape
-        time_ids = torch.arange(T_out, device=log_probs_1.device).unsqueeze(0)  # [1, T_out]
-        mask = (time_ids < adjustedLens.unsqueeze(1)).float()  # [B, T_out]
-        loss_cr = (kl_sym * mask).sum() / mask.sum().clamp_min(1.0)
-
-        # Final loss combines CTC and consistency regularization
-        if lambda_cr > 0:
-            loss = loss_ctc_mean + lambda_cr * loss_cr
+        if use_cr_ctc:
+            # Two-view CR-CTC loss
+            pred_1 = model.forward(X, dayIdx)
+            pred_2 = model.forward(X, dayIdx)
+            loss = loss_fn(pred_1, pred_2, y, adjustedLens, y_len)
         else:
-            loss = loss_ctc_mean
+            pred = model.forward(X, dayIdx)
+            loss = loss_fn(
+                torch.permute(pred.log_softmax(2), [1, 0, 2]),
+                y,
+                adjustedLens,
+                y_len,
+            )
 
         # Backpropagation
         optimizer.zero_grad()
         loss.backward()
+        if grad_clip and grad_clip > 0:
+            clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         scheduler.step()
 
@@ -247,13 +345,12 @@ def trainModel(args):
                     )
 
                     pred = model.forward(X, testDayIdx)
-                    loss = loss_ctc(
+                    loss = base_ctc_loss(
                         torch.permute(pred.log_softmax(2), [1, 0, 2]),
                         y,
                         ((X_len - model.kernelLen) / model.strideLen).to(torch.int32),
                         y_len,
                     )
-                    loss = torch.sum(loss)
                     allLoss.append(loss.cpu().detach().numpy())
 
                     adjustedLens = ((X_len - model.kernelLen) / model.strideLen).to(
@@ -279,7 +376,7 @@ def trainModel(args):
                         total_seq_length += len(trueSeq)
 
                 avgDayLoss = np.sum(allLoss) / len(testLoader)
-                cer = total_edit_distance / total_seq_length
+                cer = (total_edit_distance / total_seq_length ) 
 
                 endTime = time.time()
                 print(
@@ -287,8 +384,12 @@ def trainModel(args):
                 )
                 startTime = time.time()
 
-            if len(testCER) > 0 and cer < np.min(testCER):
+            if cer < best_cer:
                 torch.save(model.state_dict(), args["outputDir"] + "/modelWeights")
+                best_cer = cer
+                patience_counter = 0
+            else:
+                patience_counter += 1
             testLoss.append(avgDayLoss)
             testCER.append(cer)
 
@@ -307,6 +408,10 @@ def trainModel(args):
                 if mode == 'w':
                     f.write("batch,ctc_loss,cer,time_per_batch\n")
                 f.write(f"{batch},{avgDayLoss},{cer},{(endTime - startTime)/100}\n")
+
+            if patience_counter >= patience:
+                print(f"Early stopping triggered at batch {batch} (patience {patience})")
+                break
 
 
 def loadModel(modelDir, nInputLayers=24, device="cuda"):
@@ -329,6 +434,8 @@ def loadModel(modelDir, nInputLayers=24, device="cuda"):
             bidirectional=args["bidirectional"],
             nhead=args.get("nhead", 4),
             dim_feedforward=args.get("dim_feedforward", 1024),
+            use_layer_norm=args.get("use_layer_norm", False),
+            use_rope=args.get("use_rope", True),
         ).to(device)
     else:
         model = GRUDecoder(
@@ -343,6 +450,7 @@ def loadModel(modelDir, nInputLayers=24, device="cuda"):
             kernelLen=args["kernelLen"],
             gaussianSmoothWidth=args["gaussianSmoothWidth"],
             bidirectional=args["bidirectional"],
+            use_layer_norm=args.get("use_layer_norm", False),
         ).to(device)
 
     model.load_state_dict(torch.load(modelWeightPath, map_location=device))

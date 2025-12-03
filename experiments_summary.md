@@ -43,26 +43,23 @@
 ## Experiment 6: Scaling Up (Deep & Wide)
 **Date:** Nov 21, 2025
 **Settings:**
-*   **Model:** **8 Layers**, **384 Dim** (d_model).
-*   **Dropout:** Increased to `0.3`.
-*   **Training:** 12,000 batches.
-
-**Results:**
-*   **Final CER**: `0.206`.
-*   **Analysis**: Almost reached the 0.20 milestone. The loss was still slowly decreasing. The deeper model helped.
-
-**Gap to SOTA:**
-*   SOTA (Conformer) likely benefits from "interleaved" convolutions and better augmentation (Feature Masking).
-*   We are missing **Feature Masking** (masking specific electrode channels), which is standard in SpecAugment and BCI to handle channel noise.
+*   **Model:** 8 Layers, 384 Dim.
+*   **Result:** **CER 0.206**.
 
 ---
 
 ## Experiment 7: Feature Masking (SpecAugment++)
 **Date:** Nov 21, 2025
-**Planned Changes:**
-1.  **Augmentation**: Add **Feature Masking** (masking random channels/frequencies) alongside Time Masking.
-2.  **Goal**: Force the model to not rely on any single electrode, improving robustness and generalization.
-3.  **Model**: Keep Exp 6 settings (Large CNN-Transformer).
+**Settings:**
+*   **Augmentation:** Added Feature Masking.
+*   **Model:** 8 Layers, 384 Dim.
+*   **Result:** **CER 0.2056** in 12000 round, reach 0.198135 in 16000 round.
+*   **Analysis:** Negligible gain (-0.0004). The current architecture (CNN-Transformer) has seemingly plateaued around 0.20.
 
-**Hypothesis:**
-*   Adding Feature Masking will provide the final regularization push needed to break `0.20` CER.
+**Next Steps:**
+*   To break the 0.20 floor decisively, we need:
+Conformer: Interleaved convolution is superior for speech.
+Rotational Embeddings (RoPE): Better than sinusoidal for variable lengths.
+Loss Function: CTC is notoriously "spiky". Adding a transducer (RNN-T) head is complex, but we can try a Label Smoothing or Focal Loss equivalent for CTC if available, or just stick to structural changes.
+
+## partial conclusion. This might reach the limitation for pure transformer base model. 11.24 after scalling several rounds with differen parameters.

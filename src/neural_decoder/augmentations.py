@@ -79,11 +79,11 @@ class GaussianSmoothing(nn.Module):
     in the input using a depthwise convolution.
     Arguments:
         channels (int, sequence): Number of channels of the input tensors. Output will
-        have this number of channels as well.
+            have this number of channels as well.
         kernel_size (int, sequence): Size of the gaussian kernel.
         sigma (float, sequence): Standard deviation of the gaussian kernel.
         dim (int, optional): The number of dimensions of the data.
-        Default value is 2 (spatial).
+            Default value is 2 (spatial).
     """
 
     def __init__(self, channels, kernel_size, sigma, dim=2):

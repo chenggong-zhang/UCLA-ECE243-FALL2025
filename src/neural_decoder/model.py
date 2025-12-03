@@ -18,6 +18,7 @@ class GRUDecoder(nn.Module):
         kernelLen=14,
         gaussianSmoothWidth=0,
         bidirectional=False,
+        use_layer_norm=False,
     ):
         super(GRUDecoder, self).__init__()
 
@@ -33,6 +34,7 @@ class GRUDecoder(nn.Module):
         self.kernelLen = kernelLen
         self.gaussianSmoothWidth = gaussianSmoothWidth
         self.bidirectional = bidirectional
+        self.use_layer_norm = use_layer_norm
         self.inputLayerNonlinearity = torch.nn.Softsign()
         self.unfolder = torch.nn.Unfold(
             (self.kernelLen, 1), dilation=1, padding=0, stride=self.strideLen
@@ -79,6 +81,11 @@ class GRUDecoder(nn.Module):
             )  # +1 for CTC blank
         else:
             self.fc_decoder_out = nn.Linear(hidden_dim, n_classes + 1)  # +1 for CTC blank
+        if self.use_layer_norm:
+            norm_dim = hidden_dim * 2 if self.bidirectional else hidden_dim
+            self.layer_norm = nn.LayerNorm(norm_dim)
+        else:
+            self.layer_norm = None
 
     def forward(self, neuralInput, dayIdx):
         neuralInput = torch.permute(neuralInput, (0, 2, 1))
@@ -117,6 +124,9 @@ class GRUDecoder(nn.Module):
             ).requires_grad_()
 
         hid, _ = self.gru_decoder(stridedInputs, h0.detach())
+
+        if self.layer_norm is not None:
+            hid = self.layer_norm(hid)
 
         # get seq
         seq_out = self.fc_decoder_out(hid)
