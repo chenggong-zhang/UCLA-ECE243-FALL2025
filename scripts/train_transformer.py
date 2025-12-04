@@ -10,7 +10,7 @@ args['batchSize'] = 64
 args['lrStart'] = 0.0008
 args['lrEnd'] = 0.00008
 args['nUnits'] = 384        
-args['nBatch'] = 20000      
+args['nBatch'] = 15000     
 args['nLayers'] = 8
 
 args['scheduler_type'] = 'cosine_warmup'  # 'linear', 'cosine', 'cosine_warmup'
