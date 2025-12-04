@@ -41,6 +41,13 @@ args['timeMaskNum'] = 2        # masks per sequence
 args['featureMaskLen'] = 20    # channels per feature-mask
 args['featureMaskNum'] = 2     # masks per sequence
 
+args['timeStretching'] = True
+args['timeStretchMinFactor'] = 0.9
+args['timeStretchMaxFactor'] = 1.1
+
+args['timeJittering'] = True
+args['timeJitterMaxShift'] = 7
+
 args['augRampupFrac'] = 0.3
 from neural_decoder.neural_decoder_trainer import trainModel
 

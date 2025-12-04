@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
 from .model import GRUDecoder
 from .model_transformer import TransformerDecoder
@@ -224,6 +225,78 @@ def trainModel(args):
         # Augmentation schedule
         aug_scale = get_aug_scale(step)
 
+        if args.get("timeStretching", False) and aug_scale > 0:
+            B, T, C = X.shape
+            base_min = args.get("timeStretchMinFactor", 0.9)
+            base_max = args.get("timeStretchMaxFactor", 1.1)
+
+            # For each sample, warp only the valid portion [0:X_len[b])
+            for b in range(B):
+                Tb = int(X_len[b].item())
+                if Tb <= 1:
+                    continue
+
+                # Interpolate the factor range toward 1.0 when aug_scale is small
+                # aug_scale = 0  -> min_s = max_s = 1.0 (no perturb)
+                # aug_scale = 1  -> [base_min, base_max]
+                min_s = 1.0 + (base_min - 1.0) * aug_scale
+                max_s = 1.0 + (base_max - 1.0) * aug_scale
+
+                s = torch.empty(1, device=X.device).uniform_(min_s, max_s).item()
+
+                # Original time indices [0, Tb-1]
+                t = torch.arange(Tb, device=X.device, dtype=torch.float32)
+
+                # Map output time t_out -> input time t_in = t_out / s
+                src_idx = t / s
+                src_idx = torch.clamp(src_idx, 0, Tb - 1)
+
+                idx0 = torch.floor(src_idx).long()
+                idx1 = torch.clamp(idx0 + 1, max=Tb - 1)
+                w = (src_idx - idx0.float()).unsqueeze(-1)  # [Tb, 1]
+
+                v0 = X[b, idx0, :]  # [Tb, C]
+                v1 = X[b, idx1, :]
+                warped = (1.0 - w) * v0 + w * v1  # linear interpolation
+
+                # Replace only the valid portion
+                X[b, :Tb, :] = warped
+
+
+        if args.get("timeJittering", False) and aug_scale > 0:
+            B, T, C = X.shape
+            base_max_shift = int(args.get("timeJitterMaxShift", 5))
+
+            # Scale max shift with aug_scale (so early training has tiny/no jitter)
+            max_shift = int(base_max_shift * aug_scale)
+            if max_shift > 0:
+                for b in range(B):
+                    Tb = int(X_len[b].item())
+                    if Tb <= 1:
+                        continue
+
+                    # Sample shift ∈ [-max_shift, max_shift]
+                    shift = torch.randint(-max_shift, max_shift + 1, (1,), device=X.device).item()
+                    if shift == 0:
+                        continue
+
+                    xb = X[b, :Tb, :]  # valid part
+                    if shift > 0:
+                        # shift right: pad at start
+                        # new[shift:Tb] = old[0:Tb-shift], new[0:shift] = 0
+                        new_xb = torch.zeros_like(xb)
+                        new_xb[shift:Tb, :] = xb[0:Tb - shift, :]
+                    else:
+                        # shift < 0: shift left: pad at end
+                        k = -shift
+                        if k >= Tb:
+                            new_xb = torch.zeros_like(xb)
+                        else:
+                            new_xb = torch.zeros_like(xb)
+                            new_xb[0:Tb - k, :] = xb[k:Tb, :]
+
+                    X[b, :Tb, :] = new_xb
+                    
         # Noise
         if args["whiteNoiseSD"] > 0 and aug_scale > 0:
             X += torch.randn(X.shape, device=device) * (args["whiteNoiseSD"] * aug_scale)
