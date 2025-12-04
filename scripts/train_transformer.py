@@ -7,10 +7,10 @@ args['datasetPath'] = '/home/tianlezheng/UCLA-ECE243-FALL2025/data/ptDecoder_ctc
 args['seqLen'] = 150
 args['maxTimeSeriesLen'] = 1200
 args['batchSize'] = 64
-args['lrStart'] = 0.0008
-args['lrEnd'] = 0.00008
+args['lrStart'] = 0.001
+args['lrEnd'] = 0.0001
 args['nUnits'] = 384        
-args['nBatch'] = 15000     
+args['nBatch'] = 20000   
 args['nLayers'] = 8
 
 args['scheduler_type'] = 'cosine_warmup'  # 'linear', 'cosine', 'cosine_warmup'
@@ -47,6 +47,11 @@ args['timeStretchMaxFactor'] = 1.1
 
 args['timeJittering'] = True
 args['timeJitterMaxShift'] = 7
+
+# --- Adversarial (FGSM-style) augmentation ---
+args['useFGSM'] = True
+args['advEps'] = 0.02
+args['advProb'] = 0.3
 
 args['augRampupFrac'] = 0.3
 from neural_decoder.neural_decoder_trainer import trainModel
