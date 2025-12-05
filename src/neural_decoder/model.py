@@ -1,9 +1,6 @@
 import torch
 from torch import nn
 
-from .augmentations import GaussianSmoothing
-
-
 class GRUDecoder(nn.Module):
     def __init__(
         self,
@@ -32,15 +29,11 @@ class GRUDecoder(nn.Module):
         self.dropout = dropout
         self.strideLen = strideLen
         self.kernelLen = kernelLen
-        self.gaussianSmoothWidth = gaussianSmoothWidth
         self.bidirectional = bidirectional
         self.use_layer_norm = use_layer_norm
         self.inputLayerNonlinearity = torch.nn.Softsign()
         self.unfolder = torch.nn.Unfold(
             (self.kernelLen, 1), dilation=1, padding=0, stride=self.strideLen
-        )
-        self.gaussianSmoother = GaussianSmoothing(
-            neural_dim, 20, self.gaussianSmoothWidth, dim=1
         )
         self.dayWeights = torch.nn.Parameter(torch.randn(nDays, neural_dim, neural_dim))
         self.dayBias = torch.nn.Parameter(torch.zeros(nDays, 1, neural_dim))
@@ -88,10 +81,6 @@ class GRUDecoder(nn.Module):
             self.layer_norm = None
 
     def forward(self, neuralInput, dayIdx):
-        neuralInput = torch.permute(neuralInput, (0, 2, 1))
-        neuralInput = self.gaussianSmoother(neuralInput)
-        neuralInput = torch.permute(neuralInput, (0, 2, 1))
-
         # apply day layer
         dayWeights = torch.index_select(self.dayWeights, 0, dayIdx)
         transformedNeural = torch.einsum(

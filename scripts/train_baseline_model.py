@@ -2,15 +2,15 @@
 modelName = 'speechBaseline4'
 
 args = {}
-args['outputDir'] = '/home/harry/projects/ucla/UCLA-ECE243-FALL2025/logs/speech_logs/' + modelName
-args['datasetPath'] = '/home/harry/projects/ucla/UCLA-ECE243-FALL2025/data/ptDecoder_ctc'
+args['outputDir'] = '/home/tianlezheng/UCLA-ECE243-FALL2025/logs/speech_logs/' + modelName
+args['datasetPath'] = '/home/tianlezheng/UCLA-ECE243-FALL2025/data/ptDecoder_ctc'
 args['seqLen'] = 150
 args['maxTimeSeriesLen'] = 1200
 args['batchSize'] = 128
 args['lrStart'] = 0.05
 args['lrEnd'] = 0.02
 args['nUnits'] = 256
-args['nBatch'] = 10000 #3000
+args['nBatch'] = 10000
 args['nLayers'] = 5
 args['seed'] = 0
 args['nClasses'] = 40

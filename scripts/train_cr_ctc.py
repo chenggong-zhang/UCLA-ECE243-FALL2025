@@ -12,23 +12,21 @@ from neural_decoder.neural_decoder_trainer import trainModel
 
 def make_args(model_name, lambda_cr):
     args = {
-        "outputDir": f"/home/chenggong/UCLA-ECE243-FALL2025/logs/speech_logs/{model_name}",
-        "datasetPath": "/home/chenggong/UCLA-ECE243-FALL2025/data/ptDecoder_ctc.pkl",
-        # "seqLen": 150,
-        # "maxTimeSeriesLen": 1200,
-        # not referenced anywhere in the trainer or model
-        "bidirectional": False,
-        # accepted by TransformerDecoder but never used inside it.
-        "strideLen": 4, # stored, but CNN front-end is hardcoded to stride 4; only used later for length math.
-        "kernelLen": 0, # not used in the CNN; only affects the length formula in the trainer.
 
-        ##################################################### used and could be improved by grid search######################################
-        #basic info about dataset and training
+        "outputDir": f"/home/tianlezheng/UCLA-ECE243-FALL2025/logs/speech_logs/{model_name}",
+        "datasetPath": "/home/tianlezheng/UCLA-ECE243-FALL2025/data/ptDecoder_ctc",
+
+        # Model / data basics
         "seed": 0,
         "batchSize": 64,
         "nBatch": 16000,
         "nClasses": 40,
         "nInputFeatures": 256,
+
+        # Convolution / sequence geometry (used only for length math)
+        "bidirectional": False,
+        "strideLen": 4,   # CNN front-end uses stride 4; used in length computation
+        "kernelLen": 0,   # if conv kernel > 0, adjust; used in length computation
 
         # Transformer architecture
         "use_transformer": True,
@@ -36,32 +34,49 @@ def make_args(model_name, lambda_cr):
         "nUnits": 384,
         "nLayers": 8,
         "dim_feedforward": 1536,
-        "timeMasking": True,
-        "featureMasking": True,
-        "use_rope": True,  # Enable RoPE in transformer attention
+        "use_rope": True,       # RoPE in transformer attention
         "use_layer_norm": True,
         "dropout": 0.3,
 
-        # augmentation
+        "timeMasking": True,
+        "timeMaskLen": 20,
+        "timeMaskNum": 2,
+        "featureMasking": True,
+        "featureMaskLen": 20,
+        "featureMaskNum": 2,
         "whiteNoiseSD": 0.8,
         "constantOffsetSD": 0.2,
+
         "gaussianSmoothWidth": 2.0,
 
-        # optimizer and learning rate LR Schedule and decay
+        # time-based warps
+        "augRampupFrac": 0.3,# ramp augment strength over first 30% of training
+        "timeStretching": True,
+        "timeStretchMinFactor": 0.9,
+        "timeStretchMaxFactor": 1.1,
+        "timeJittering": True,
+        "timeJitterMaxShift": 5,
+
+        # adversarial FGSM augmentation
+        "useFGSM": True,
+        "advEps": 0.02,# epsilon relative to feature scale
+        "advProb": 0.3,
+
+        # Optimizer & LR schedule
         "lrStart": 0.0008,
         "lrEnd": 0.00008,
         "l2_decay": 0.01,
-        "warmupSteps": 500,
-        "gradClip": 5.0, #Stability
+        "scheduler_type": "cosine_warmup",  # "cosine_warmup", "cosine", or "linear"
+        "warmup_steps": 500,
 
-        #Training Control
-        "earlyStoppingPatience": 50,
+        # Gradient clipping
+        "max_grad_norm": 5.0,
+        "early_stopping_patience": 50,
 
         # CR-CTC loss vs label smoothing loss
         "use_cr_ctc": True,
         "lambda_cr": lambda_cr,
-        "labelSmoothing": 0.0, # set 0 for not used, use cr_ctc
-
+        "labelSmoothing": 0.0,  # 0 -> only CR-CTC; >0 -> label-smoothed CTC base
     }
     return args
 
@@ -69,7 +84,7 @@ def make_args(model_name, lambda_cr):
 def main():
     lambda_grid = [0.05, 0.1, 0.2]
     for lam in lambda_grid:
-        model_name = f"speechTransformerCRCTC_ROPE_layernorm_gaussianSmooth_lam{lam}"
+        model_name = f"speechTransformerCRCTC_ROPE_layernorm_gaussianSmooth_tier1_fgsm_lam{lam}"
         args = make_args(model_name, lam)
         os.makedirs(args["outputDir"], exist_ok=True)
         print(f"=== Starting run: {model_name} (lambda_cr={lam}) ===")

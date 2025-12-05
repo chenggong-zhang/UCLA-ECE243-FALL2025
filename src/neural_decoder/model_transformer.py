@@ -1,7 +1,6 @@
 import math
 import torch
 from torch import nn
-from .augmentations import GaussianSmoothing
 from .rope import RotaryPositionalEmbeddings
 
 class PositionalEncoding(nn.Module):
@@ -152,12 +151,6 @@ class TransformerDecoder(nn.Module):
         self.kernelLen = kernelLen
         self.use_layer_norm = use_layer_norm
         self.use_rope = use_rope
-        self.gaussianSmoothWidth = gaussianSmoothWidth
-        self.gaussianSmoother = (
-            GaussianSmoothing(neural_dim, 20, self.gaussianSmoothWidth, dim=1)
-            if self.gaussianSmoothWidth and self.gaussianSmoothWidth > 0
-            else None
-        )
         
         # Day Adaptation (Linear)
         self.dayWeights = torch.nn.Parameter(torch.randn(nDays, neural_dim, neural_dim))
@@ -197,11 +190,7 @@ class TransformerDecoder(nn.Module):
 
     def forward(self, neuralInput, dayIdx):
         # neuralInput: [Batch, Time, Channels]
-        if self.gaussianSmoother is not None:
-            neuralInput = torch.permute(neuralInput, (0, 2, 1))  # [B, C, T]
-            neuralInput = self.gaussianSmoother(neuralInput)
-            neuralInput = torch.permute(neuralInput, (0, 2, 1))  # [B, T, C]
-        
+
         # 1. Apply Day Adaptation
         # Day adaptation applies to raw features before any convolution
         dayWeights = torch.index_select(self.dayWeights, 0, dayIdx)

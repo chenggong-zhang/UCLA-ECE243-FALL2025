@@ -1,0 +1,69 @@
+{
+  "timestamp": "2025-12-01T04:55:50.402409",
+  "config": {
+    "lrStart": 0.0008,
+    "lrEnd": 8e-05,
+    "nUnits": 384,
+    "nBatch": 20000,
+    "nLayers": 8,
+    "scheduler_type": "cosine_warmup",
+    "warmup_steps": 800,
+    "early_stopping_patience": 50,
+    "max_grad_norm": 1.0,
+    "seed": 0,
+    "nClasses": 40,
+    "nInputFeatures": 256,
+    "dropout": 0.3,
+    "whiteNoiseSD": 0.8,
+    "constantOffsetSD": 0.2,
+    "gaussianSmoothWidth": 2.0,
+    "strideLen": 4,
+    "kernelLen": 0,
+    "bidirectional": false,
+    "l2_decay": 0.01,
+    "use_transformer": true,
+    "nhead": 6,
+    "dim_feedforward": 1536,
+    "timeMasking": true,
+    "featureMasking": true
+  },
+  "batch_sizes": [
+    32,
+    48,
+    64,
+    96,
+    128
+  ],
+  "results": [
+    {
+      "batch_size": 32,
+      "best_cer": 0.24745161157195328,
+      "status": "success",
+      "log_dir": "/home/tianlezheng/UCLA-ECE243-FALL2025/logs/speech_logs/grid_search_batch32"
+    },
+    {
+      "batch_size": 48,
+      "best_cer": 0.22875655152490612,
+      "status": "success",
+      "log_dir": "/home/tianlezheng/UCLA-ECE243-FALL2025/logs/speech_logs/grid_search_batch48"
+    },
+    {
+      "batch_size": 64,
+      "best_cer": 0.21765506995171474,
+      "status": "success",
+      "log_dir": "/home/tianlezheng/UCLA-ECE243-FALL2025/logs/speech_logs/grid_search_batch64"
+    },
+    {
+      "batch_size": 96,
+      "best_cer": 0.23341999917461104,
+      "status": "success",
+      "log_dir": "/home/tianlezheng/UCLA-ECE243-FALL2025/logs/speech_logs/grid_search_batch96"
+    },
+    {
+      "batch_size": 128,
+      "best_cer": 0.21055672485658866,
+      "status": "success",
+      "log_dir": "/home/tianlezheng/UCLA-ECE243-FALL2025/logs/speech_logs/grid_search_batch128"
+    }
+  ]
+}
